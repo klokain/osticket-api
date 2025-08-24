@@ -3,6 +3,9 @@
 # CRITICAL: OSTicket submodule - don't push
 osTicket/
 
+# Deployment folders - don't track
+osticket_deploy/
+
 # Python
 __pycache__/
 *.py[cod]

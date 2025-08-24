@@ -11,10 +11,11 @@ from pydantic import BaseModel, EmailStr
 from sqlalchemy.orm import Session
 
 from ..core.database import get_db
-from ..core.auth import AuthenticationService, AuthenticationError
+from ..core.auth import AuthenticationService
+from ..core.exceptions import AuthenticationError
 from ..core.oauth2 import oauth2_manager, OAuth2Provider
 from ..models.auth import ExternalIdentity
-from ..middleware.auth import require_auth
+from ..middleware.auth import require_auth, get_user_info_dict
 import structlog
 
 logger = structlog.get_logger()
@@ -64,10 +65,7 @@ async def staff_login(
         
         if not auth_result:
             logger.warning("Staff login failed", username=credentials.username)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid username or password"
-            )
+            raise AuthenticationError("Invalid username or password")
         
         # Create tokens
         tokens = auth_service.create_auth_tokens(
@@ -87,17 +85,11 @@ async def staff_login(
             expires_in=30 * 60  # 30 minutes
         )
         
-    except AuthenticationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(e)
-        )
+    except AuthenticationError:
+        raise
     except Exception as e:
         logger.error("Staff login error", error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Login failed"
-        )
+        raise AuthenticationError("Login failed")
 
 @router.post("/user/login", response_model=AuthTokenResponse) 
 async def user_login(
@@ -117,10 +109,7 @@ async def user_login(
         
         if not auth_result:
             logger.warning("User login failed", email=credentials.email)
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="Invalid email or password"
-            )
+            raise AuthenticationError("Invalid email or password")
         
         # Create tokens
         tokens = auth_service.create_auth_tokens(
@@ -140,17 +129,11 @@ async def user_login(
             expires_in=30 * 60  # 30 minutes
         )
         
-    except AuthenticationError as e:
-        raise HTTPException(
-            status_code=status.HTTP_401_UNAUTHORIZED,
-            detail=str(e)
-        )
+    except AuthenticationError:
+        raise
     except Exception as e:
         logger.error("User login error", error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Login failed"
-        )
+        raise AuthenticationError("Login failed")
 
 # OAuth2/OIDC Endpoints
 
@@ -164,10 +147,8 @@ async def oauth2_login(
     try:
         oauth_provider = oauth2_manager.get_provider(provider)
         if not oauth_provider:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Provider '{provider}' not enabled"
-            )
+            from ..core.exceptions import NotFoundError
+            raise NotFoundError("OAuth Provider", provider)
         
         # Build redirect URI
         redirect_uri = str(request.url_for("oauth2_callback", provider=provider))
@@ -186,10 +167,8 @@ async def oauth2_login(
         
     except Exception as e:
         logger.error("OAuth2 login initiation failed", provider=provider, error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="OAuth2 login failed"
-        )
+        from ..core.exceptions import APIException
+        raise APIException("OAuth2 login failed")
 
 @router.get("/oauth2/{provider}/callback")
 async def oauth2_callback(
@@ -204,23 +183,17 @@ async def oauth2_callback(
     try:
         if error:
             logger.warning("OAuth2 callback received error", provider=provider, error=error)
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail=f"OAuth2 authentication failed: {error}"
-            )
+            from ..core.exceptions import ValidationError
+            raise ValidationError(f"OAuth2 authentication failed: {error}")
         
         if not code:
-            raise HTTPException(
-                status_code=status.HTTP_400_BAD_REQUEST,
-                detail="Authorization code not provided"
-            )
+            from ..core.exceptions import ValidationError
+            raise ValidationError("Authorization code not provided")
         
         oauth_provider = oauth2_manager.get_provider(provider)
         if not oauth_provider:
-            raise HTTPException(
-                status_code=status.HTTP_404_NOT_FOUND,
-                detail=f"Provider '{provider}' not enabled"
-            )
+            from ..core.exceptions import NotFoundError
+            raise NotFoundError("OAuth Provider", provider)
         
         # Exchange code for tokens
         redirect_uri = str(request.url_for("oauth2_callback", provider=provider))
@@ -238,10 +211,7 @@ async def oauth2_callback(
             logger.warning("External identity not mapped", 
                           provider=provider, 
                           external_user_id=user_data.get("id"))
-            raise HTTPException(
-                status_code=status.HTTP_401_UNAUTHORIZED,
-                detail="External identity not linked to OSTicket account"
-            )
+            raise AuthenticationError("External identity not linked to OSTicket account")
         
         # Create JWT tokens for the mapped OSTicket user
         tokens = auth_service.create_auth_tokens(
@@ -274,19 +244,17 @@ async def oauth2_callback(
         
         return response_data
         
-    except HTTPException:
+    except (AuthenticationError, ValidationError, NotFoundError):
         raise
     except Exception as e:
         logger.error("OAuth2 callback error", provider=provider, error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="OAuth2 authentication failed"
-        )
+        from ..core.exceptions import APIException
+        raise APIException("OAuth2 authentication failed")
 
 # Common Authentication Endpoints
 
 @router.get("/userinfo", response_model=UserInfoResponse)
-async def get_current_user_info(user_info: dict = Depends(require_auth)):
+async def get_current_user_info(user_info: dict = Depends(get_user_info_dict)):
     """Get current authenticated user information (JWT token based)"""
     try:
         response = UserInfoResponse(
@@ -303,10 +271,8 @@ async def get_current_user_info(user_info: dict = Depends(require_auth)):
         
     except Exception as e:
         logger.error("Get current user error", error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get user information"
-        )
+        from ..core.exceptions import APIException
+        raise APIException("Failed to get user information")
 
 @router.post("/logout")
 async def logout(request: Request, user_info: dict = Depends(require_auth)):
@@ -323,10 +289,8 @@ async def logout(request: Request, user_info: dict = Depends(require_auth)):
         
     except Exception as e:
         logger.error("Logout error", error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Logout failed"
-        )
+        from ..core.exceptions import APIException
+        raise APIException("Logout failed")
 
 @router.get("/providers")
 async def get_enabled_providers():
@@ -355,10 +319,8 @@ async def get_enabled_providers():
         
     except Exception as e:
         logger.error("Get providers error", error=str(e))
-        raise HTTPException(
-            status_code=status.HTTP_500_INTERNAL_SERVER_ERROR,
-            detail="Failed to get provider information"
-        )
+        from ..core.exceptions import APIException
+        raise APIException("Failed to get provider information")
 
 # Helper Functions
 

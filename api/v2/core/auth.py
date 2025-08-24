@@ -9,24 +9,18 @@ from typing import Optional, Dict, Any, Union
 from jose import jwt, JWTError
 from passlib.context import CryptContext
 from sqlalchemy.orm import Session
-from ..models.auth import AuthToken, ExternalIdentity, ApiKey, StaffSession, UserSession
+from ..models.auth import AuthToken, ExternalIdentity
+from ..models.core import ApiKey
 from ..models.staff import Staff
-from ..models.user import User
+from ..models.user import User, UserEmail, UserAccount
 from ..core.config import settings
+from ..core.exceptions import AuthenticationError, AuthorizationError
 import structlog
 
 logger = structlog.get_logger()
 
 # Password context for OSTicket compatibility
 pwd_context = CryptContext(schemes=["bcrypt"], deprecated="auto")
-
-class AuthenticationError(Exception):
-    """Authentication failed"""
-    pass
-
-class AuthorizationError(Exception):
-    """Authorization failed"""
-    pass
 
 class TokenManager:
     """Manage JWT tokens and authentication"""
@@ -179,19 +173,31 @@ class AuthenticationService:
     def authenticate_user(self, email: str, password: str) -> Optional[Dict[str, Any]]:
         """Authenticate end user with email/password"""
         try:
-            # Query user from database
+            # First find the user by email address
+            user_email = self.db.query(UserEmail).filter(
+                UserEmail.address == email
+            ).first()
+            
+            if not user_email:
+                logger.warning("User email not found", email=email)
+                return None
+            
+            # Get the user record
             user = self.db.query(User).filter(
-                User.email == email
+                User.id == user_email.user_id
             ).first()
             
             if not user:
-                logger.warning("User not found", email=email)
+                logger.warning("User not found for email", email=email, user_id=user_email.user_id)
                 return None
             
             # Check if user account exists and get password
-            user_account = user.account
-            if not user_account:
-                logger.warning("User account not found", user_id=user.id)
+            user_account = self.db.query(UserAccount).filter(
+                UserAccount.user_id == user.id
+            ).first()
+            
+            if not user_account or not user_account.passwd:
+                logger.warning("User account not found or no password", user_id=user.id)
                 return None
             
             # Verify password
@@ -204,7 +210,7 @@ class AuthenticationService:
             return {
                 "user_type": "user",
                 "user_id": user.id,
-                "email": user.email,
+                "email": email,
                 "name": user.name,
                 "organization_id": user.org_id,
                 "status": user_account.status
@@ -231,11 +237,10 @@ class AuthenticationService:
             ).first()
             
             if external_identity:
-                # Update last login and metadata
-                external_identity.last_login = datetime.utcnow()
+                # Update external identity data
                 external_identity.external_email = external_email
                 external_identity.external_name = external_user_data.get("name")
-                external_identity.provider_metadata = json.dumps(external_user_data)
+                external_identity.updated = datetime.utcnow()
                 self.db.commit()
                 
                 # Get OSTicket user data based on mapping
@@ -293,10 +298,16 @@ class AuthenticationService:
             elif user_type == "user":
                 user = self.db.query(User).filter(User.id == user_id).first()
                 if user:
+                    # Get primary email address
+                    user_email = self.db.query(UserEmail).filter(
+                        UserEmail.user_id == user.id
+                    ).first()
+                    email = user_email.address if user_email else None
+                    
                     return {
                         "user_type": "user",
                         "user_id": user.id,
-                        "email": user.email,
+                        "email": email,
                         "name": user.name,
                         "organization_id": user.org_id
                     }
@@ -335,24 +346,16 @@ class AuthenticationService:
             access_token = self.token_manager.create_access_token(token_payload)
             refresh_token = self.token_manager.create_refresh_token(token_payload)
             
-            # Store tokens in database
-            self._store_auth_token(
-                user_data=user_data,
-                token=access_token,
-                token_type="access",
-                session_id=session_id,
-                ip_address=ip_address,
-                user_agent=user_agent
-            )
+            # TODO: Store tokens in database when ost_auth_token table is created
+            # For now, we'll just return the tokens without storing them
+            # This allows authentication to work with OSTicket's existing infrastructure
+            logger.info("Token storage skipped - using stateless JWT tokens",
+                       user_type=user_data["user_type"], 
+                       user_id=user_data["user_id"])
             
-            self._store_auth_token(
-                user_data=user_data,
-                token=refresh_token,
-                token_type="refresh",
-                session_id=session_id,
-                ip_address=ip_address,
-                user_agent=user_agent
-            )
+            # Commented out until ost_auth_token table is created:
+            # self._store_auth_token(...)
+            # self._store_auth_token(...)
             
             return {
                 "access_token": access_token,
@@ -368,7 +371,9 @@ class AuthenticationService:
                          session_id: str = None, ip_address: str = None, user_agent: str = None):
         """Store authentication token in database"""
         try:
+            import uuid
             token_hash = self.token_manager.hash_token(token)
+            jti = str(uuid.uuid4())  # Generate unique JWT ID
             
             # Calculate expiration
             if token_type == "access":
@@ -381,9 +386,9 @@ class AuthenticationService:
                 user_type=user_data["user_type"],
                 user_id=user_data["user_id"],
                 token_type=token_type,
+                jti=jti,
                 token_hash=token_hash,
                 expires_at=expires_at,
-                session_id=session_id,
                 ip_address=ip_address,
                 user_agent=user_agent
             )

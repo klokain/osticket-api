@@ -14,11 +14,11 @@ import structlog
 import ipaddress
 
 from ..core.database import SessionLocal, get_db
-from ..core.auth import AuthenticationService, AuthenticationError, token_manager
-from ..models.auth import ApiKey, StaffSession, UserSession, AuthToken
+from ..core.auth import AuthenticationService, token_manager
+from ..models.core import ApiKey, Session
 from ..models.staff import Staff
 from ..models.user import User
-from ..core.exceptions import AuthorizationError
+from ..core.exceptions import AuthenticationError, AuthorizationError
 
 logger = structlog.get_logger()
 
@@ -71,7 +71,13 @@ class AuthMiddleware(BaseHTTPMiddleware):
         
         db = SessionLocal()
         try:
-            # Try API key authentication first
+            # Try JWT Bearer token authentication first
+            auth_header = request.headers.get("Authorization")
+            if auth_header and auth_header.startswith("Bearer "):
+                jwt_token = auth_header[7:]  # Remove "Bearer " prefix
+                return await self.authenticate_jwt_token(db, request, jwt_token)
+            
+            # Try API key authentication
             api_key_header = request.headers.get("X-API-Key")
             if api_key_header:
                 return await self.authenticate_api_key(db, request, api_key_header)
@@ -141,55 +147,141 @@ class AuthMiddleware(BaseHTTPMiddleware):
         
         return AuthContext("api_key", api_key=db_api_key)
     
+    async def authenticate_jwt_token(
+        self, db: Session, request: Request, jwt_token: str
+    ) -> AuthContext:
+        """Authenticate using JWT Bearer token"""
+        
+        try:
+            # Verify and decode JWT token
+            payload = token_manager.verify_token(jwt_token)
+            
+            user_type = payload.get("user_type")
+            user_id = payload.get("user_id")
+            
+            if not user_type or not user_id:
+                logger.warning(
+                    "Invalid JWT token payload",
+                    user_type=user_type,
+                    user_id=user_id,
+                    request_id=getattr(request.state, 'request_id', 'unknown')
+                )
+                raise AuthenticationError("Invalid token payload")
+            
+            # Verify user still exists and is active
+            if user_type == "staff":
+                staff = db.query(Staff).filter(
+                    Staff.staff_id == user_id,
+                    Staff.isactive == True
+                ).first()
+                
+                if not staff:
+                    logger.warning(
+                        "JWT token references non-existent or inactive staff",
+                        staff_id=user_id,
+                        request_id=getattr(request.state, 'request_id', 'unknown')
+                    )
+                    raise AuthenticationError("User no longer exists or inactive")
+                
+                logger.info(
+                    "JWT staff authentication successful",
+                    staff_id=staff.staff_id,
+                    username=staff.username,
+                    request_id=getattr(request.state, 'request_id', 'unknown')
+                )
+                
+                return AuthContext("staff_session", staff=staff)
+                
+            elif user_type == "user":
+                user = db.query(User).filter(User.id == user_id).first()
+                
+                if not user:
+                    logger.warning(
+                        "JWT token references non-existent user",
+                        user_id=user_id,
+                        request_id=getattr(request.state, 'request_id', 'unknown')
+                    )
+                    raise AuthenticationError("User no longer exists")
+                
+                logger.info(
+                    "JWT user authentication successful",
+                    user_id=user.id,
+                    username=user.name,
+                    request_id=getattr(request.state, 'request_id', 'unknown')
+                )
+                
+                return AuthContext("user_session", user=user)
+            
+            else:
+                logger.warning(
+                    "Unknown user type in JWT token",
+                    user_type=user_type,
+                    request_id=getattr(request.state, 'request_id', 'unknown')
+                )
+                raise AuthenticationError("Invalid user type")
+                
+        except AuthenticationError:
+            raise
+        except Exception as e:
+            logger.warning(
+                "JWT token verification failed",
+                error=str(e),
+                request_id=getattr(request.state, 'request_id', 'unknown')
+            )
+            raise AuthenticationError("Invalid or expired token")
+    
     async def authenticate_session(
         self, db: Session, request: Request, session_id: str
     ) -> AuthContext:
         """Authenticate using session cookie"""
         
-        # Try staff session first
-        staff_session = db.query(StaffSession).filter(
-            StaffSession.session_id == session_id,
-            StaffSession.session_expire > datetime.utcnow()
+        # Check session
+        session = db.query(Session).filter(
+            Session.session_id == session_id,
+            Session.session_expire > datetime.utcnow()
         ).first()
         
-        if staff_session:
-            # Get staff member
-            staff = db.query(Staff).filter(
-                Staff.staff_id == staff_session.staff_id,
-                Staff.isactive == True
-            ).first()
-            
-            if staff:
-                logger.info(
-                    "Staff session authentication successful",
-                    staff_id=staff.staff_id,
-                    username=staff.username,
+        if session and session.user_id and session.user_id != "0":
+            try:
+                # Try to match as staff first (user_id could be staff_id)
+                staff = db.query(Staff).filter(
+                    Staff.staff_id == int(session.user_id),
+                    Staff.isactive == True
+                ).first()
+                
+                if staff:
+                    logger.info(
+                        "Staff session authentication successful",
+                        staff_id=staff.staff_id,
+                        username=staff.username,
+                        session_id=session_id[:8] + "...",
+                        request_id=getattr(request.state, 'request_id', 'unknown')
+                    )
+                    return AuthContext("staff_session", staff=staff, session_id=session_id)
+                
+                # Try as regular user
+                user = db.query(User).filter(
+                    User.id == int(session.user_id)
+                ).first()
+                
+                if user:
+                    logger.info(
+                        "User session authentication successful",
+                        user_id=user.id,
+                        username=user.name,
+                        session_id=session_id[:8] + "...",
+                        request_id=getattr(request.state, 'request_id', 'unknown')
+                    )
+                    return AuthContext("user_session", user=user, session_id=session_id)
+                
+            except ValueError:
+                # user_id is not a valid integer
+                logger.warning(
+                    "Invalid user_id in session",
+                    user_id=session.user_id,
                     session_id=session_id[:8] + "...",
                     request_id=getattr(request.state, 'request_id', 'unknown')
                 )
-                return AuthContext("staff_session", staff=staff, session_id=session_id)
-        
-        # Try user session
-        user_session = db.query(UserSession).filter(
-            UserSession.session_id == session_id,
-            UserSession.session_expire > datetime.utcnow()
-        ).first()
-        
-        if user_session:
-            # Get user
-            user = db.query(User).filter(
-                User.id == user_session.user_id
-            ).first()
-            
-            if user:
-                logger.info(
-                    "User session authentication successful",
-                    user_id=user.id,
-                    username=user.name,
-                    session_id=session_id[:8] + "...",
-                    request_id=getattr(request.state, 'request_id', 'unknown')
-                )
-                return AuthContext("user_session", user=user, session_id=session_id)
         
         logger.warning(
             "Invalid or expired session",
@@ -280,3 +372,27 @@ def require_api_key(request: Request) -> AuthContext:
     if auth.auth_type != "api_key":
         raise AuthorizationError("API key authentication required")
     return auth
+
+def get_user_info_dict(request: Request) -> dict:
+    """Get user information as dictionary for JWT-based endpoints"""
+    auth = require_auth(request)
+    
+    if auth.staff:
+        return {
+            "user_type": "staff",
+            "user_id": auth.staff.staff_id,
+            "username": auth.staff.username,
+            "email": auth.staff.email,
+            "name": f"{auth.staff.firstname} {auth.staff.lastname}".strip(),
+            "isadmin": auth.staff.isadmin,
+            "dept_id": auth.staff.dept_id
+        }
+    elif auth.user:
+        return {
+            "user_type": "user",
+            "user_id": auth.user.id,
+            "name": auth.user.name,
+            "email": None  # Will be populated from UserEmail if needed
+        }
+    else:
+        raise AuthenticationError("No valid user context")
