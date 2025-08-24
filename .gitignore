@@ -1,0 +1,55 @@
+# OSTicket submodule - don't push
+osTicket/
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+venv/
+env/
+ENV/
+.venv
+
+# FastAPI specific
+.env
+*.db
+*.sqlite
+*.sqlite3
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+
+# Testing
+.pytest_cache/
+.coverage
+htmlcov/
+.tox/
+.coverage.*
+*.cover
+
+# Logs
+*.log
+logs/
+
+# Docker
+*.pid
+docker-compose.override.yml
+
+# Temporary files
+tmp/
+temp/
+
+# API Server (when created)
+api-server/venv/
+api-server/.env
+api-server/*.db
+
+# Documentation build
+docs/_build/
