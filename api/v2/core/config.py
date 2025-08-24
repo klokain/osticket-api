@@ -78,6 +78,32 @@ class Settings(BaseSettings):
     DEBUG: bool = False
     LOG_LEVEL: str = "INFO"
     
+    # OAuth2/OIDC Identity Providers
+    # Keycloak Configuration
+    KEYCLOAK_SERVER_URL: Optional[str] = None
+    KEYCLOAK_REALM: str = "osticket"
+    KEYCLOAK_CLIENT_ID: Optional[str] = None
+    KEYCLOAK_CLIENT_SECRET: Optional[str] = None
+    KEYCLOAK_ENABLED: bool = False
+    
+    # Microsoft Entra (Azure AD) Configuration  
+    MICROSOFT_TENANT_ID: Optional[str] = None
+    MICROSOFT_CLIENT_ID: Optional[str] = None
+    MICROSOFT_CLIENT_SECRET: Optional[str] = None
+    MICROSOFT_ENABLED: bool = False
+    
+    # Authentication Settings
+    OSTICKET_STAFF_LOGIN_ENABLED: bool = True
+    OSTICKET_USER_LOGIN_ENABLED: bool = True
+    ALLOW_EXTERNAL_IDENTITY_LINKING: bool = True
+    AUTO_CREATE_USERS_FROM_EXTERNAL: bool = False
+    
+    # JWT Configuration
+    JWT_SECRET_KEY: Optional[str] = None
+    JWT_ALGORITHM: str = "HS256"
+    JWT_ACCESS_TOKEN_EXPIRE_MINUTES: int = 30
+    JWT_REFRESH_TOKEN_EXPIRE_DAYS: int = 7
+    
     class Config:
         env_file = ".env"
         case_sensitive = True
@@ -95,6 +121,7 @@ class Settings(BaseSettings):
                     'DATABASE_PASSWORD': osticket_config.get('DBPASS', ''),
                     'TABLE_PREFIX': osticket_config.get('TABLE_PREFIX', 'ost_'),
                     'SECRET_KEY': osticket_config.get('SECRET_SALT', 'your-secret-key-here'),
+                    'JWT_SECRET_KEY': osticket_config.get('SECRET_SALT', 'your-secret-key-here'),
                 }
                 return config_mapping
             

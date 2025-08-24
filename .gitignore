@@ -3,6 +3,9 @@
 # CRITICAL: OSTicket submodule - don't push
 osTicket/
 
+# Deployment folders - don't track
+osticket_deploy/
+
 # Python
 __pycache__/
 *.py[cod]
@@ -67,6 +70,10 @@ db.sqlite3-journal
 # Flask stuff:
 instance/
 .webassets-cache
+
+# MCP
+.mcp.json
+
 
 # FastAPI specific
 .env

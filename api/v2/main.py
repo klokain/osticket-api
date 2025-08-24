@@ -19,7 +19,7 @@ from .core.config import settings
 from .core.database import engine, SessionLocal
 from .middleware.auth import AuthMiddleware
 from .middleware.logging import LoggingMiddleware
-from .routes import health, auth
+from .routes import health, auth, auth_extended
 from .core.exceptions import setup_exception_handlers
 
 # Configure structured logging
@@ -70,6 +70,7 @@ def create_app() -> FastAPI:
     # Include routers
     app.include_router(health.router, prefix="/api/v2", tags=["health"])
     app.include_router(auth.router, prefix="/api/v2/auth", tags=["authentication"])
+    app.include_router(auth_extended.router, prefix="/api/v2", tags=["extended-authentication"])
     
     @app.on_event("startup")
     async def startup_event():
