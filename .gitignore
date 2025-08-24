@@ -176,3 +176,6 @@ api-server/*.db
 # Cursor
 .cursorignore
 .cursorindexingignore
+
+# Claude Code local settings (keep personal MCP configs private)
+.claude/settings.local.json
