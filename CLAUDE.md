@@ -165,3 +165,4 @@ php osTicket/setup/test/run-tests.php
 7. Implement rate limiting and throttling
 8. Create API testing framework
 - never put claude code signature in the commits. put small [cc] at the end of the message. that's all.
+- when working on linear issue, always check the subissues

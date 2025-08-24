@@ -1,23 +1,24 @@
 """
 Authentication middleware for OSTicket API v2
-
-Supports both OSTicket's API key system and session-based authentication.
+Multi-provider authentication: API keys, OAuth2/OIDC, staff/user passwords, JWT tokens
 """
 
+import re
+from datetime import datetime
 from typing import Callable, Optional, Tuple
-from fastapi import Request, Response, HTTPException
+from fastapi import Request, Response, HTTPException, status
 from starlette.middleware.base import BaseHTTPMiddleware
 from sqlalchemy.orm import Session
 from sqlalchemy import text
 import structlog
 import ipaddress
-from datetime import datetime
 
-from ..core.database import SessionLocal
-from ..models.auth import ApiKey, StaffSession, UserSession
+from ..core.database import SessionLocal, get_db
+from ..core.auth import AuthenticationService, AuthenticationError, token_manager
+from ..models.auth import ApiKey, StaffSession, UserSession, AuthToken
 from ..models.staff import Staff
 from ..models.user import User
-from ..core.exceptions import AuthenticationError, AuthorizationError
+from ..core.exceptions import AuthorizationError
 
 logger = structlog.get_logger()
 

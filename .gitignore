@@ -68,6 +68,10 @@ db.sqlite3-journal
 instance/
 .webassets-cache
 
+# MCP
+.mcp.json
+
+
 # FastAPI specific
 .env
 *.db
